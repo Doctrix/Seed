@@ -17,6 +17,23 @@
 			"Name": "GraphFormatter",
 			"Enabled": true,
 			"MarketplaceURL": "com.epicgames.launcher://ue/marketplace/content/297159d6d3f4425b9c095b18a811a401"
+		},
+		{
+			"Name": "HTTPChunkInstaller",
+			"Enabled": true
 		}
+	],
+	"TargetPlatforms": [
+		"Android",
+		"AllDesktop",
+		"HoloLens",
+		"HTML5",
+		"IOS",
+		"LinuxNoEditor",
+		"LinuxAArch64NoEditor",
+		"Lumin",
+		"MacNoEditor",
+		"TVOS",
+		"WindowsNoEditor"
 	]
 }

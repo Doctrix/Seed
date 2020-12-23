@@ -7,6 +7,8 @@
 #include "GameJoltPluginModule.h"
 #include "Misc/DateTime.h"
 #include "Engine/World.h"
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 
 /* Constructor */
 UUEGameJoltAPI::UUEGameJoltAPI(const class FObjectInitializer& PCIP) : Super(PCIP)
@@ -27,27 +29,41 @@ UWorld* UUEGameJoltAPI::GetWorld() const
 	return World;
 }
 
-/* Gets the GameID */
-int32 UUEGameJoltAPI::GetGameID()
-{
-	return Game_ID;
-}
-
 /* Sets information needed for all requests */
-void UUEGameJoltAPI::Init(FString PrivateKey, int32 GameID)
+bool UUEGameJoltAPI::Init(const int32 GameID, const FString PrivateKey, const bool AutoLogin = false)
 {
 	Game_ID = GameID;
 	Game_PrivateKey = PrivateKey;
+	if(!AutoLogin)
+	{
+		UE_LOG(GJAPI, Log, TEXT("Autologin is turned off!"));
+		return false;
+	}
+	
+	if(!FPaths::FileExists(FPaths::Combine(FPaths::ProjectDir(), TEXT(".gj-credentials"))))
+		return false;
+
+	TArray<FString> strings;
+	FFileHelper::LoadFileToStringArray(strings, *FPaths::Combine(FPaths::ProjectDir(), TEXT(".gj-credentials")));
+	this->AutoLogin(strings[1], strings[2]);
+	return true;
+}
+
+void UUEGameJoltAPI::AutoLogin(const FString Name, const FString Token)
+{
+	FString output;
+	UserName = Name;
+	UserToken = Token;
+	LastActionPerformed = EGameJoltComponentEnum::GJ_USER_AUTOLOGIN;
+	SendRequest(output, "/users/auth/?");
 }
 
 /* Gets the time of the GameJolt servers */
 bool UUEGameJoltAPI::FetchServerTime()
 {
-	FString GameIDString;
 	FString output;
-	GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_TIME;
-	return SendRequest(output, TEXT("/time/?format=json&game_id=") + GameIDString);
+	return SendRequest(output, "/time/?", false);
 }
 
 /* Puts the requested server time in a readable format */
@@ -79,18 +95,6 @@ FDateTime UUEGameJoltAPI::ReadServerTime()
 	return FDateTime(Year, Month, Day, Hour, Minute, Second);
 }
 
-/* Returns the private key */
-FString UUEGameJoltAPI::GetGamePrivateKey()
-{
-	return Game_PrivateKey;
-}
-
-/* Returns the username */
-FString UUEGameJoltAPI::GetUsername()
-{
-	return UserName;
-}
-
 /* Creates a new instance of the UUEGameJoltAPI class, for use in Blueprint graphs. */
 UUEGameJoltAPI* UUEGameJoltAPI::Create(UObject* WorldContextObject) {
 	// Get the world object from the context
@@ -103,14 +107,14 @@ UUEGameJoltAPI* UUEGameJoltAPI::Create(UObject* WorldContextObject) {
 }
 
 /* Sends a request to authentificate the user */
-void UUEGameJoltAPI::Login(FString name, FString token)
+void UUEGameJoltAPI::Login(const FString name, const FString token)
 {
 	FString output;
 	FString GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_USER_AUTH;
 	UserName = name;
 	UserToken = token;
-	SendRequest(output, TEXT("/users/auth/?format=json&game_id=") + GameIDString + TEXT("&username=") + name + TEXT("&user_token=") + token);
+	SendRequest(output, "/users/auth/?");
 }
 
 /* Checks if the authentification was succesful */
@@ -139,12 +143,10 @@ bool UUEGameJoltAPI::isUserAuthorize()
 /* Gets information the current user */
 bool UUEGameJoltAPI::FetchUser()
 {
-	bool ret = true;
+	bool ret = false;
 	FString output;
-	FString GameIDString;
-	GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_USER_FETCH;
-	ret = SendRequest(output, TEXT("/users/?format=json&game_id=") + GameIDString + TEXT("&username=") + UserName);
+	ret = SendRequest(output, "/users/?username=" + UserName, false);
 	if (!ret)
 	{
 		UE_LOG(GJAPI, Error, TEXT("Could not fetch user."));
@@ -154,16 +156,14 @@ bool UUEGameJoltAPI::FetchUser()
 }
 
 /* Fetches an array of users */
-bool UUEGameJoltAPI::FetchUsers(TArray<int32> Users)
+bool UUEGameJoltAPI::FetchUsers(const TArray<int32> Users)
 {
 	FString output;
 	LastActionPerformed = EGameJoltComponentEnum::GJ_USERS_FETCH;
 	FString UserIDs = "";
 	for(const int32 UserID : Users)
-	{
 		UserIDs.Append(FString::FromInt(UserID) + ",");
-	}
-	return SendRequest(output, TEXT("/users/?format=json&game_id=") + FString::FromInt(Game_ID) + "&user_id=" + UserIDs);
+	return SendRequest(output, "/users/?user_id=" + UserIDs, false);
 }
 
 /* Fetches the friendlist of the current user */
@@ -171,7 +171,7 @@ bool UUEGameJoltAPI::FetchFriendlist()
 {
 	FString output;
 	LastActionPerformed = EGameJoltComponentEnum::GJ_USER_FRIENDLIST;
-	return SendRequest(output, "/friends/?format=json&game_id=" + FString::FromInt(Game_ID) + "&username=" + UserName + "&user_token=" + UserToken);
+	return SendRequest(output, "/friends/?");
 }
 
 /* Gets the friendlist */
@@ -180,9 +180,7 @@ TArray<int32> UUEGameJoltAPI::GetFriendlist()
 	TArray<UUEGameJoltAPI*> returnArray = GetObject("response")->GetObjectArray(GetObject("response"), "friends");
 	TArray<int32> returnIDs;
 	for(int i = 0; i < returnArray.Num(); i++)
-	{
 		returnIDs.Add(returnArray[i]->GetInt("friend_id"));
-	}
 	return returnIDs;
 }
 
@@ -201,19 +199,17 @@ bool UUEGameJoltAPI::OpenSession()
 	FString GameIDString;
 	GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SESSION_OPEN;
-	return SendRequest(output, TEXT("/sessions/open/?format=json&game_id=") + GameIDString + 
-		TEXT("&username=") + UserName + TEXT("&user_token=") + UserToken);
+	return SendRequest(output, "/sessions/open/?");
 }
 
 /* Pings the session */
-bool UUEGameJoltAPI::PingSession()
+bool UUEGameJoltAPI::PingSession(ESessionStatus SessionStatus)
 {
 	FString output;
-	FString GameIDString;
-	GameIDString = FString::FromInt(Game_ID);
+	FString SessionString = SessionStatus == ESessionStatus::Active ? FString("active") : FString("idle");
+	FString GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SESSION_PING;
-	return SendRequest(output, TEXT("/sessions/ping/?format=json&status=active&game_id=") + GameIDString +
-		TEXT("&username=") + UserName + TEXT("&user_token=") + UserToken);
+	return SendRequest(output, "/sessions/ping/?status=" + SessionString);
 }
 
 /* Closes the session */
@@ -223,9 +219,7 @@ bool UUEGameJoltAPI::CloseSession()
 	FString GameIDString;
 	GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SESSION_CLOSE;
-	return SendRequest(output, TEXT("/sessions/close/?format=json&game_id=") + GameIDString +
-		TEXT("&username=") + UserName +
-		TEXT("&user_token=") + UserToken);
+	return SendRequest(output, "/sessions/close/?");
 }
 
 /* Fetches the session status */
@@ -233,7 +227,7 @@ bool UUEGameJoltAPI::CheckSession()
 {
 	FString output;
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SESSION_CHECK;
-	return SendRequest(output, TEXT("/sessions/check/?format=json&game_id=") + FString::FromInt(Game_ID) + "&username=" + UserName + "&user_token=" + UserToken);
+	return SendRequest(output, "/sessions/check/?");
 }
 
 /* Gets the session status */
@@ -246,12 +240,6 @@ bool UUEGameJoltAPI::GetSessionStatus()
 		return false;
 	}
 	return Response->GetBool("success");
-}
-
-/* Deprecated - 1.8 */
-TArray<FUserInfo>  UUEGameJoltAPI::FetchArrayUsers()
-{
-	return GetUserInfo();
 }
 
 /* Gets an array of users and puts them in an array of FUserInfo structs */
@@ -280,7 +268,7 @@ TArray<FUserInfo> UUEGameJoltAPI::GetUserInfo()
 }
 
 /* Awards the current user a trophy */
-bool UUEGameJoltAPI::RewardTrophy(int32 Trophy_ID)
+bool UUEGameJoltAPI::RewardTrophy(const int32 Trophy_ID)
 {
 
 	bool ret = true;
@@ -295,29 +283,25 @@ bool UUEGameJoltAPI::RewardTrophy(int32 Trophy_ID)
 	}
 	TrophyIDString = FString::FromInt(Trophy_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_TROPHIES_ADD;
-	ret = SendRequest(output, TEXT("/trophies/add-achieved/?format=json&game_id=") + GameIDString +
-							TEXT("&username=") + UserName + 
-							TEXT("&user_token=") + UserToken +
-							TEXT("&trophy_id=") + TrophyIDString);
+	ret = SendRequest(output, "/trophies/add-achieved/?trophy_id=" + TrophyIDString);
 
 
 	return true;
 }
 
 /* Gets information for all trophies */
-void UUEGameJoltAPI::FetchAllTrophies(EGameJoltAchievedTrophies AchievedType)
+void UUEGameJoltAPI::FetchAllTrophies(const EGameJoltAchievedTrophies AchievedType)
 {
 	TArray<int32> Trophies;
 	FetchTrophies(AchievedType, Trophies);
 }
 
 /* Gets information for the selected trophies */
-void UUEGameJoltAPI::FetchTrophies(EGameJoltAchievedTrophies AchievedType, TArray<int32> Trophies_ID)
+void UUEGameJoltAPI::FetchTrophies(const EGameJoltAchievedTrophies AchievedType, const TArray<int32> Trophy_IDs)
 {
 	TArray<FTrophyInfo> returnTrophies;
 	bool ret = true;
 	FString output;
-	FString GameIDString;
 	FString TrophyIDString;
 	FString AchievedString;
 
@@ -337,28 +321,21 @@ void UUEGameJoltAPI::FetchTrophies(EGameJoltAchievedTrophies AchievedType, TArra
 		AchievedString = "true";
 	}
 
-	GameIDString = FString::FromInt(Game_ID);
-	for (int32 i = 0; i < Trophies_ID.Num(); i++){
-		TrophyIDString += FString::FromInt(Trophies_ID[i]);
-		if (i != Trophies_ID.Num()-1)
+	for (int32 i = 0; i < Trophy_IDs.Num(); i++){
+		TrophyIDString += FString::FromInt(Trophy_IDs[i]);
+		if (i != Trophy_IDs.Num()-1)
 		{
 			TrophyIDString += TEXT(",");
 		}
 	}
 	if (AchievedType == EGameJoltAchievedTrophies::GJ_ACHIEVEDTROPHY_BLANK)//if We Want to get all trophies
 	{
-		ret = SendRequest(output, TEXT("/trophies/?format=json&game_id=") + GameIDString +
-			TEXT("&username=") + UserName +
-			TEXT("&user_token=") + UserToken +
-			(Trophies_ID.Num() > 0 ? "&trophy_id=" : "") + TrophyIDString);
+		ret = SendRequest(output, "/trophies/?" + (Trophy_IDs.Num() > 0 ? "&trophy_id=" : "" + TrophyIDString));
 	}
 	else //if We Want to get what trophies the User achieved have Not Achieved
 	{
-		ret = SendRequest(output, TEXT("/trophies/?format=json&game_id=") + GameIDString +
-			TEXT("&username=") + UserName +
-			TEXT("&user_token=") + UserToken +
-			TEXT("&achieved=" ) + AchievedString +
-			(Trophies_ID.Num() > 0 ? "&trophy_id=" : "") + TrophyIDString);
+		ret = SendRequest(output, "/trophies/?achieved=" + AchievedString +
+			(Trophy_IDs.Num() > 0 ? "&trophy_id=" : "" + TrophyIDString));
 	}
 
 	if (!ret)
@@ -393,11 +370,11 @@ TArray<FTrophyInfo> UUEGameJoltAPI::GetTrophies()
 }
 
 /* Unachieves a trophy */
-bool UUEGameJoltAPI::RemoveRewardedTrophy(int32 Trophy_ID)
+bool UUEGameJoltAPI::RemoveRewardedTrophy(const int32 Trophy_ID)
 {
 	FString output;
 	LastActionPerformed = EGameJoltComponentEnum::GJ_TROHIES_REMOVE;
-	return SendRequest(output, TEXT("/trophies/remove-achieved/?format=json&game_id=") + FString::FromInt(Game_ID) + "&username=" + UserName + "&user_token=" + UserToken + "&trophy_id=" + FString::FromInt(Trophy_ID));
+	return SendRequest(output, "/trophies/remove-achieved/?trophy_id=" + FString::FromInt(Trophy_ID));
 }
 
 /* Checks if the trophy removel was successful */
@@ -413,7 +390,7 @@ bool UUEGameJoltAPI::GetTrophyRemovalStatus()
 }
 
 /* Returns a list of scores either for a user or globally for a game */
-bool UUEGameJoltAPI::FetchScoreboard(int32 ScoreLimit, int32 Table_id)
+bool UUEGameJoltAPI::FetchScoreboard(const int32 ScoreLimit, const int32 Table_id, const int32 BetterThan, const int32 WorseThan)
 {
 	TArray<FTrophyInfo> returnTrophies;
 	bool ret = true;
@@ -427,11 +404,13 @@ bool UUEGameJoltAPI::FetchScoreboard(int32 ScoreLimit, int32 Table_id)
 	ScoreLimitString = FString::FromInt(ScoreLimit);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SCORES_FETCH;
 
-	ret = SendRequest(output, TEXT("/scores/?format=json&game_id=") + GameIDString +
+	ret = SendRequest(output, TEXT("/scores/?game_id=") + GameIDString +
 		(!UserName.IsEmpty() || !bIsLoggedIn ? "&username=" : "") + UserName +
 		(bIsLoggedIn ? "&user_token=" : "") + UserToken +
-		(ScoreLimit > 0 ? "&limit=" : "") + (ScoreLimit > 0 ? ScoreLimitString : "") +
-		(Table_id > 0 ? "&table_id=" : "") + (Table_id > 0 ? TableIDString : ""));
+		(ScoreLimit > 0 ? "&limit=" + ScoreLimitString : "") +
+		(Table_id > 0 ? "&table_id=" + TableIDString : "") +
+		(BetterThan > 0 ? "&better_than=" + FString::FromInt(BetterThan) : "") +
+		(WorseThan > 0 ? "&worse_than=" + FString::FromInt(WorseThan) : ""));
 
 	if (!ret)
 	{
@@ -452,19 +431,19 @@ TArray<FScoreInfo> UUEGameJoltAPI::GetScoreboard()
 	{
 		tempScore.ScoreSort = returnArray[i]->GetInt("sort");
 		tempScore.ScoreString = returnArray[i]->GetString("score");
-		tempScore.extra_data = returnArray[i]->GetString("extra_data");
+		tempScore.ExtraData = returnArray[i]->GetString("extra_data");
 		tempScore.UserName = returnArray[i]->GetString("user");
-		tempScore.User_Id = returnArray[i]->GetInt("user_id");
-		tempScore.guestUser = returnArray[i]->GetString("guest");
-		tempScore.stored = returnArray[i]->GetString("stored");
-
+		tempScore.UserID = returnArray[i]->GetInt("user_id");
+		tempScore.Guest = returnArray[i]->GetString("guest");
+		tempScore.UnixTimestamp = returnArray[i]->GetString("stored");
+		tempScore.TimeStamp = FDateTime::FromUnixTimestamp(returnArray[i]->GetInt("stored"));
 		returnScoreInfo.Add(tempScore);
 	}
 	return returnScoreInfo;
 }
 
 /* Adds an entry to a scoreboard */
-bool UUEGameJoltAPI::AddScore(FString UserScore, int32 UserScore_Sort, FString GuestUser, FString extra_data, int32 table_id)
+bool UUEGameJoltAPI::AddScore(const FString UserScore, const int32 UserScore_Sort, const FString GuestUser, const FString extra_data, const int32 table_id)
 {
 	bool ret = true;
 	FString output;
@@ -474,8 +453,7 @@ bool UUEGameJoltAPI::AddScore(FString UserScore, int32 UserScore_Sort, FString G
 	GameIDString = FString::FromInt(Game_ID);
 	TableIDString = FString::FromInt(table_id);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SCORES_ADD;
-	ret = SendRequest(output, TEXT("/scores/add/?format=json&game_id=") + GameIDString +
-		TEXT("&score=") + UserScore +
+	ret = SendRequest(output, "/scores/add/?score=" + UserScore +
 		TEXT("&sort=") + FString::FromInt(UserScore_Sort) +
 		(!UserName.IsEmpty() || bIsLoggedIn ? "&username=" : "") + UserName +
 		(bIsLoggedIn ? "&user_token=" : "") + UserToken +
@@ -501,7 +479,7 @@ bool UUEGameJoltAPI::FetchScoreboardTable()
 	GameIDString = FString::FromInt(Game_ID);
 	LastActionPerformed = EGameJoltComponentEnum::GJ_SCORES_TABLE;
 
-	ret = SendRequest(output, TEXT("/scores/tables/?format=json&game_id=") + GameIDString);
+	ret = SendRequest(output, "/scores/tables/?");
 
 	if (!ret)
 	{
@@ -529,6 +507,76 @@ TArray<FScoreTableInfo> UUEGameJoltAPI::GetScoreboardTable()
 
 	return returnTableinfo;
 }
+
+/* Fetches the rank of a highscore */
+bool UUEGameJoltAPI::FetchRank(const int32 Score, const int32 TableID = 0)
+{
+	LastActionPerformed = EGameJoltComponentEnum::GJ_SCORES_RANK;
+	FString output;
+	return SendRequest(output, "/scores/get-rank/?sort=" + FString::FromInt(Score) + ((TableID != 0) ? ("&table_id=" + FString::FromInt(TableID)) : ""));
+}
+
+/* Gets the rank of a highscore from the response */
+int32 UUEGameJoltAPI::GetRank()
+{
+	UUEGameJoltAPI* response = GetObject("response");
+	if(!response)
+	{
+		UE_LOG(GJAPI, Error, TEXT("Response in GetRank is invalid! Was it called to early? LastActionPerformed is %s"), *UEnum::GetValueAsString<EGameJoltComponentEnum>(LastActionPerformed));
+		return 0;
+	}
+	return GetObject("response")->GetInt("rank");
+}
+
+#pragma region Data-Store
+
+void UUEGameJoltAPI::SetData(EDataStore Type, FString key, FString data)
+{
+	FString output;
+	LastActionPerformed = EGameJoltComponentEnum::GJ_DATASTORE_SET;
+	SendRequest(output, "/data-store/set/?key=" + key + "&data=" + data, Type == EDataStore::User);
+}
+
+void UUEGameJoltAPI::FetchData(EDataStore Type, FString key)
+{
+	FString output;
+	LastActionPerformed = EGameJoltComponentEnum::GJ_DATASTORE_FETCH;
+	SendRequest(output, "/data-store/?key=" + key, Type == EDataStore::User);
+}
+
+void UUEGameJoltAPI::UpdateData(EDataStore Type, FString key, EDataOperation Operation, FString value)
+{
+	FString output;
+	LastActionPerformed = EGameJoltComponentEnum::GJ_DATASTORE_UPDATE;
+	SendRequest(output, "/data-store/update/?key=" + key + "&value=" + value + "&operation=" + UEnum::GetValueAsString<EDataOperation>(Operation).RightChop(16), Type == EDataStore::User);
+}
+
+void UUEGameJoltAPI::RemoveData(EDataStore Type, FString key)
+{
+	FString output;
+	LastActionPerformed = EGameJoltComponentEnum::GJ_DATASTORE_REMOVE;
+	SendRequest(output, "/data-store/remove/?key=" + key, Type == EDataStore::User);
+}
+
+void UUEGameJoltAPI::GetData(bool& Success, FString& DataAsString, int32& DataAsInt)
+{
+	DataAsString = "";
+	DataAsInt = 0;
+	UUEGameJoltAPI* response = GetObject("response");
+	if(!response)
+	{
+		Success = false;
+		return;
+	}
+	Success = response->GetBool("success");
+	if(!Success)
+		return;
+	
+	DataAsString = response->GetString("data");
+	DataAsInt = response->GetInt("data");
+}
+
+#pragma endregion
 
 /* Gets nested post data from the object with the specified key */
 UUEGameJoltAPI* UUEGameJoltAPI::GetObject(const FString& key)
@@ -626,12 +674,17 @@ TArray<UUEGameJoltAPI*> UUEGameJoltAPI::GetObjectArray(UObject* WorldContextObje
 }
 
 /* Sends a request */
-bool UUEGameJoltAPI::SendRequest(const FString& output, FString url)
+bool UUEGameJoltAPI::SendRequest(const FString& output, FString url, bool bAppendUserInfo)
 {
-
 	if (Game_PrivateKey == TEXT(""))
 	{
 		UE_LOG(GJAPI, Error, TEXT("You must put in your game's private key before you can use any of the API functions."));
+		return false;
+	}
+
+	if(Game_ID == 0)
+	{
+		UE_LOG(GJAPI, Error, TEXT("You must put in your game's ID before you can use any of the API functions"));
 		return false;
 	}
 
@@ -640,17 +693,21 @@ bool UUEGameJoltAPI::SendRequest(const FString& output, FString url)
 	//Start writing the response
 	WriteObject(JsonWriter, "", new FJsonValueObject(Data));
 	JsonWriter->Close();
+	
 	//Create URL First
+	url = TEXT("https://") + GJAPI_SERVER + GJAPI_ROOT + GJAPI_VERSION + url + "&game_id=" + FString::FromInt(Game_ID);
 
-	url = TEXT("https://") + GJAPI_SERVER + GJAPI_ROOT + GJAPI_VERSION + url;
-	FString signature(FMD5::HashAnsiString(*(url + Game_PrivateKey))); //+ GJAPI_SERVER + url + Game_PrivateKey(TEXT("http://") + GJAPI_SERVER +
+	if(bAppendUserInfo)
+		url += "&username=" + UserName + "&user_token=" + UserToken;
+
+	FString signature(FMD5::HashAnsiString(*(url + Game_PrivateKey)));
 	url += TEXT("&signature=") + signature;
-	UE_LOG(GJAPI, Error, TEXT("%s"), *url);
+	UE_LOG(GJAPI, Log, TEXT("%s"), *url);
 
 
-	TSharedRef< IHttpRequest > HttpRequest = FHttpModule::Get().CreateRequest();
+	TSharedRef<IHttpRequest> HttpRequest = FHttpModule::Get().CreateRequest();
 	HttpRequest->SetVerb("POST");
-	HttpRequest->SetURL(CreateURL(url));
+	HttpRequest->SetURL(url);
 	HttpRequest->SetHeader("Content-Type", "application/json");
 	HttpRequest->SetContentAsString(output);
 	HttpRequest->OnProcessRequestComplete().BindUObject(this, &UUEGameJoltAPI::OnReady);
@@ -703,15 +760,6 @@ void UUEGameJoltAPI::WriteObject(TSharedRef<TJsonWriter<TCHAR>> writer, FString 
 	}
 }
 
-/* Creates a http-URL from the input */
-FString UUEGameJoltAPI::CreateURL(FString inputURL) {
-	if (!inputURL.StartsWith("http")) {
-		return "http://" + inputURL;
-	}
-
-	return inputURL;
-}
-
 /* Creates data from a string */
 void UUEGameJoltAPI::FromString(const FString& dataString) {
 	TSharedRef<TJsonReader<TCHAR>> JsonReader = TJsonReaderFactory<TCHAR>::Create(dataString);
@@ -721,6 +769,7 @@ void UUEGameJoltAPI::FromString(const FString& dataString) {
 
 	if (!isDeserialized || !Data.IsValid()) {
 		UE_LOG(GJAPI, Error, TEXT("JSON data is invalid! Input:\n'%s'"), *dataString);
+		return;
 	}
 
 	// Assign the request content
@@ -740,7 +789,7 @@ void UUEGameJoltAPI::OnReady(FHttpRequestPtr Request, FHttpResponsePtr Response,
 	// Process the string
 	FromString(Response->GetContentAsString());
 
-	if(GetObject("response")->GetBool("success") == false && LastActionPerformed != EGameJoltComponentEnum::GJ_SESSION_CHECK)
+	if(!GetObject("response") || (GetObject("response")->GetBool("success") == false && LastActionPerformed != EGameJoltComponentEnum::GJ_SESSION_CHECK))
 	{
 		OnFailed.Broadcast();
 		return;
@@ -750,6 +799,9 @@ void UUEGameJoltAPI::OnReady(FHttpRequestPtr Request, FHttpResponsePtr Response,
 	{
 		case EGameJoltComponentEnum::GJ_USER_AUTH:
 			OnUserAuthorized.Broadcast(isUserAuthorize());
+			break;
+		case EGameJoltComponentEnum::GJ_USER_AUTOLOGIN:
+			OnAutoLogin.Broadcast(isUserAuthorize());
 			break;
 		case EGameJoltComponentEnum::GJ_USER_FETCH:
 			OnUserFetched.Broadcast(GetUserInfo()[0]);
@@ -778,11 +830,17 @@ void UUEGameJoltAPI::OnReady(FHttpRequestPtr Request, FHttpResponsePtr Response,
 		case EGameJoltComponentEnum::GJ_TROHIES_REMOVE:
 			OnTrophyRemoved.Broadcast(GetTrophyRemovalStatus());
 			break;
+		case EGameJoltComponentEnum::GJ_SCORES_ADD:
+			OnScoreAdded.Broadcast(GetObject("response")->GetBool("success"));
+			break;
 		case EGameJoltComponentEnum::GJ_SCORES_FETCH:
 			OnScoreboardFetched.Broadcast(GetScoreboard());
 			break;
 		case EGameJoltComponentEnum::GJ_SCORES_TABLE:
 			OnScoreboardTableFetched.Broadcast(GetScoreboardTable());
+			break;
+		case EGameJoltComponentEnum::GJ_SCORES_RANK:
+			OnRankFetched.Broadcast(GetRank());
 			break;
 		case EGameJoltComponentEnum::GJ_TIME:
 			OnTimeFetched.Broadcast(ReadServerTime());
@@ -796,9 +854,8 @@ void UUEGameJoltAPI::OnReady(FHttpRequestPtr Request, FHttpResponsePtr Response,
 /* Resets the saved data */
 void UUEGameJoltAPI::Reset()
 {
-	if (Data.IsValid()){
+	if (Data.IsValid())
 		Data.Reset();
-	}
 
 	// Created a new JSON Object
 	Data = MakeShareable(new FJsonObject());
